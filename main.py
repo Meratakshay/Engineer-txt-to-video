@@ -4,9 +4,9 @@ import requests
 from pyrogram import Client, filters
 
 # Telegram API Credentials (Replace with your actual credentials)
-API_ID = "YOUR_API_ID"
-API_HASH = "YOUR_API_HASH"
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+API_ID = "21705536"
+API_HASH = "c5bb241f6e3ecf33fe68a444e288de2d"
+BOT_TOKEN = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"
 
 # Initialize the bot
 bot = Client("video_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
