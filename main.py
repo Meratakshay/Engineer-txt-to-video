@@ -3,159 +3,140 @@ import mmap
 import requests
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from typing import Optional
 
-# Configuration
-class Config:
-    API_ID: str = "21705536"  # Replace with your actual API ID
-    API_HASH: str = "c5bb241f6e3ecf33fe68a444e288de2d"  # Replace with your actual API hash
-    BOT_TOKEN: str = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"  # Replace with your actual bot token
-    DOWNLOAD_DIR: str = os.path.join(os.getcwd(), "downloads")
-    MAX_KEY_LENGTH: int = 50  # Prevent excessively long keys
-    MAX_FILE_SIZE: int = 2000 * 1024 * 1024  # 2GB limit for downloads
+# Bot configuration
+API_ID = 21705536  # Replace with your API ID from https://my.telegram.org
+API_HASH = "c5bb241f6e3ecf33fe68a444e288de2d"  # Replace with your API HASH
+BOT_TOKEN = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"  # Replace with your bot token from @BotFather
 
+# Initialize the Pyrogram client
+app = Client("file_decryptor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Ensure download directory exists
-os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
-
-# Initialize the bot
-bot = Client(
-    "video_downloader_bot",
-    api_id=Config.API_ID,
-    api_hash=Config.API_HASH,
-    bot_token=Config.BOT_TOKEN
-)
-
-
-def extract_key_from_url(url: str) -> Optional[str]:
-    """Extract decryption key from URL if present."""
-    if '*' not in url:
-        return None
-    
-    parts = url.split('*')
-    if len(parts) != 2:
-        return None
-    
-    key = parts[-1].strip()
-    if not key or len(key) > Config.MAX_KEY_LENGTH:
-        return None
-    
-    return key
-
-
-def download_file(url: str, save_path: str) -> bool:
-    """Download a file from URL with proper error handling."""
+# Function to download a file from a given URL
+def download_file(url, save_path):
     try:
-        # Verify URL is valid
-        if not url.startswith(('http://', 'https://')):
-            return False
+        print(f"Downloading file from: {url}")
+        response = requests.get(url, stream=True)
+        response.raise_for_status()  # Check for HTTP errors
 
-        with requests.get(url, stream=True, timeout=60) as response:
-            response.raise_for_status()
-            
-            # Check file size
-            file_size = int(response.headers.get('content-length', 0))
-            if file_size > Config.MAX_FILE_SIZE:
-                return False
-                
-            # Download file
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        return True
+        # Save the downloaded file
+        with open(save_path, "wb") as file:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    file.write(chunk)
+        print(f"File downloaded successfully at: {save_path}")
     except Exception as e:
-        print(f"Download error: {str(e)}")
+        print(f"Error during download: {e}")
         return False
+    return True
 
+# Function to extract the decryption key from the URL
+def extract_key_from_url(url):
+    if '*' in url:
+        return url.split('*')[-1]  # Extracts the part after '*'
+    else:
+        print("No key found in the URL!")
+        return None
 
-def decrypt_file(file_path: str, key: str) -> bool:
-    """Decrypt file using XOR operation with the provided key."""
+# Function to decrypt a file using XOR
+def decrypt_file(file_path, key):
     if not os.path.exists(file_path):
+        print("Encrypted file not found!")
         return False
-
     try:
-        file_size = os.path.getsize(file_path)
-        if file_size == 0:
-            return False
-
-        # Limit the number of bytes to decrypt (first 28 bytes as in original)
-        num_bytes = min(28, file_size)
-        
+        print(f"Decrypting file: {file_path}")
         with open(file_path, "r+b") as f:
+            num_bytes = min(28, os.path.getsize(file_path))
             with mmap.mmap(f.fileno(), length=num_bytes, access=mmap.ACCESS_WRITE) as mmapped_file:
                 for i in range(num_bytes):
-                    # XOR with key characters (cycling if key is shorter than num_bytes)
-                    mmapped_file[i] ^= ord(key[i % len(key)])
-        return True
+                    mmapped_file[i] ^= ord(key[i]) if i < len(key) else i
+        print("Decryption completed successfully!")
     except Exception as e:
-        print(f"Decryption error: {str(e)}")
+        print(f"Error during decryption: {e}")
         return False
+    return True
 
-
-@bot.on_message(filters.command("start"))
+# Handler for the /start command
+@app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
-    """Handle /start command."""
-    help_text = (
-        "Hello! I'm a video downloader and decryption bot.\n\n"
-        "Send me a video URL in the format:\n"
-        "`https://example.com/video.mkv*KEY`\n\n"
-        "Where KEY is the decryption key that will be applied to the first 28 bytes of the file."
+    await message.reply_text(
+        "👋 Hello! I'm a file decryption bot.\n\n"
+        "Send me a URL containing an encrypted file with the decryption key after a '*' character.\n\n"
+        "Example: `https://example.com/encrypted.mkv*mysecretkey`"
     )
-    await message.reply_text(help_text)
 
-
-@bot.on_message(filters.text & ~filters.command)
-async def handle_video_request(client: Client, message: Message):
-    """Handle video download and decryption requests."""
-    url = message.text.strip()
+# Handler for all text messages (to process URLs)
+@app.on_message(filters.text & ~filters.command("start"))
+async def handle_url(client: Client, message: Message):
+    # Check if the message contains a URL
+    if not any(proto in message.text for proto in ["http://", "https://"]):
+        await message.reply_text("Please send a valid HTTP/HTTPS URL.")
+        return
     
-    # Extract key from URL
-    decryption_key = extract_key_from_url(url)
+    # Extract the decryption key from the URL
+    decryption_key = extract_key_from_url(message.text)
     if not decryption_key:
-        await message.reply_text(
-            "Invalid URL format!\n"
-            "Please use format: `https://example.com/video.mkv*KEY`\n"
-            "Where KEY is your decryption key."
-        )
+        await message.reply_text("No decryption key found in the URL! Please include the key after a '*' character.")
         return
-
-    # Prepare file paths
-    video_url = url.split('*')[0]
-    encrypted_path = os.path.join(Config.DOWNLOAD_DIR, "encrypted_temp.mkv")
-    decrypted_path = os.path.join(Config.DOWNLOAD_DIR, "decrypted_video.mkv")
-
-    # Download the file
-    await message.reply_text("⏳ Downloading video...")
-    if not download_file(video_url, encrypted_path):
-        await message.reply_text("❌ Failed to download the file. Please check the URL and try again.")
-        return
-
-    # Decrypt the file
-    await message.reply_text("🔓 Decrypting video...")
-    if not decrypt_file(encrypted_path, decryption_key):
-        await message.reply_text("❌ Failed to decrypt the file. Please check the key and try again.")
-        os.remove(encrypted_path)  # Clean up
-        return
-
-    # Rename and send the file
-    os.rename(encrypted_path, decrypted_path)
+    
+    # Inform user we're processing
+    processing_msg = await message.reply_text("🔍 Processing your request...")
     
     try:
-        await message.reply_text("✅ Success! Sending the file...")
-        await client.send_document(
-            chat_id=message.chat.id,
-            document=decrypted_path,
-            caption="Here's your decrypted video file"
+        # Create a temporary directory if it doesn't exist
+        temp_dir = "temp_files"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Generate file paths
+        encrypted_file_path = os.path.join(temp_dir, "encrypted_file.tmp")
+        decrypted_file_path = os.path.join(temp_dir, "decrypted_file.tmp")
+        
+        # Step 1: Download the encrypted file
+        await processing_msg.edit_text("⬇️ Downloading file...")
+        download_url = message.text.split('*')[0]  # URL without the key
+        if not download_file(download_url, encrypted_file_path):
+            await processing_msg.edit_text("❌ Failed to download the file. Please check the URL.")
+            return
+        
+        # Step 2: Decrypt the file
+        await processing_msg.edit_text("🔓 Decrypting file...")
+        if not decrypt_file(encrypted_file_path, decryption_key):
+            await processing_msg.edit_text("❌ Failed to decrypt the file. Invalid key or file format.")
+            return
+        
+        # Rename the decrypted file (keeping original extension if possible)
+        original_name = os.path.basename(download_url.split('?')[0])  # Remove query params
+        if '.' in original_name:
+            ext = original_name.split('.')[-1]
+            decrypted_file_path_final = os.path.join(temp_dir, f"decrypted.{ext}")
+            os.rename(encrypted_file_path, decrypted_file_path_final)
+        else:
+            decrypted_file_path_final = encrypted_file_path
+        
+        # Step 3: Send the decrypted file to the user
+        await processing_msg.edit_text("📤 Uploading decrypted file...")
+        await message.reply_document(
+            document=decrypted_file_path_final,
+            caption="Here's your decrypted file!",
+            progress=lambda current, total: print(f"Uploaded {current} of {total} bytes")
         )
+        
+        await processing_msg.delete()
+        
     except Exception as e:
-        await message.reply_text(f"❌ Failed to send file: {str(e)}")
+        await message.reply_text(f"❌ An error occurred: {str(e)}")
+        if 'processing_msg' in locals():
+            await processing_msg.delete()
+    
     finally:
-        # Clean up
-        if os.path.exists(decrypted_path):
-            os.remove(decrypted_path)
+        # Clean up temporary files
+        for file in [encrypted_file_path, decrypted_file_path, decrypted_file_path_final]:
+            try:
+                if file and os.path.exists(file):
+                    os.remove(file)
+            except:
+                pass
 
-
-if __name__ == "__main__":
-    print("Bot is running...")
-    bot.run()
+# Start the bot
+print("Bot is running...")
+app.run()
