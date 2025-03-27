@@ -1,10 +1,10 @@
 import os
 import mmap
 import time
+import requests
 import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 
 # Bot configuration
@@ -15,7 +15,7 @@ BOT_TOKEN = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"  # Replace with you
 # Initialize the Pyrogram client
 app = Client("file_decryptor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Global variables for progress tracking
+# Global dictionaries for progress tracking
 download_progress = {}
 upload_progress = {}
 
@@ -37,8 +37,8 @@ class ProgressTracker:
         # Calculate percentage
         percentage = (current / total) * 100
         
-        # Calculate speed (only if we have previous data and enough time has passed)
-        if time_since_last_update > 0.5:  # Update speed every 0.5 seconds
+        # Calculate speed (only if enough time has passed)
+        if time_since_last_update > 0.5:
             bytes_since_last = current - self.last_bytes
             speed_bps = bytes_since_last / time_since_last
             
@@ -76,9 +76,9 @@ class ProgressTracker:
                 "total": total
             }
 
-def download_with_ytdlp(url, save_path, progress_tracker):
+async def download_with_ytdlp(url, save_path, progress_tracker):
     try:
-        print(f"Downloading with yt-dlp: {url}")
+        print(f"Attempting yt-dlp download: {url}")
         cmd = [
             'yt-dlp',
             '-o', save_path,
@@ -93,16 +93,12 @@ def download_with_ytdlp(url, save_path, progress_tracker):
         for line in process.stdout:
             if "[download]" in line and "%" in line:
                 try:
-                    # Parse yt-dlp progress output
                     parts = line.split()
                     percentage = float(parts[1].replace('%', ''))
                     size_part = parts[3].split('/')
                     current_size = float(size_part[0]) * (1024 if size_part[0][-1] == 'K' else 1048576 if size_part[0][-1] == 'M' else 1)
                     total_size = float(size_part[1]) * (1024 if size_part[1][-1] == 'K' else 1048576 if size_part[1][-1] == 'M' else 1)
-                    speed = parts[4]
-                    eta = parts[5]
                     
-                    # Update progress tracker
                     progress_tracker.update(current_size, total_size)
                     
                 except Exception as e:
@@ -110,15 +106,102 @@ def download_with_ytdlp(url, save_path, progress_tracker):
                     continue
         
         process.wait()
-        if process.returncode != 0:
-            print(f"yt-dlp error: {process.returncode}")
-            return False
-        
-        print(f"Download completed: {save_path}")
-        return True
-    except Exception as e:
-        print(f"Download error: {e}")
+        if process.returncode == 0 and os.path.exists(save_path):
+            print(f"yt-dlp download successful: {save_path}")
+            return True
         return False
+    except Exception as e:
+        print(f"yt-dlp download error: {e}")
+        return False
+
+async def download_with_ffmpeg(url, save_path, progress_tracker):
+    try:
+        print(f"Attempting ffmpeg download: {url}")
+        cmd = [
+            'ffmpeg',
+            '-i', url,
+            '-c', 'copy',
+            '-f', 'mp4',
+            save_path
+        ]
+        
+        process = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True)
+        
+        while True:
+            line = process.stderr.readline()
+            if not line:
+                break
+            if "size=" in line:
+                try:
+                    parts = line.split()
+                    for part in parts:
+                        if part.startswith("size="):
+                            current_size = int(part.split('=')[1].replace('kB', '')) * 1024
+                        elif part.startswith("time="):
+                            time_parts = part.split('=')[1].split(':')
+                            processed_seconds = float(time_parts[0])*3600 + float(time_parts[1])*60 + float(time_parts[2])
+                            # Estimate total size based on time processed and bitrate
+                            # This is approximate since we don't know total duration
+                            total_size = current_size / (processed_seconds / 100) * 100  # Example estimation
+                            
+                            progress_tracker.update(current_size, total_size)
+                except Exception as e:
+                    print(f"Error parsing ffmpeg progress: {e}")
+        
+        process.wait()
+        if process.returncode == 0 and os.path.exists(save_path):
+            print(f"ffmpeg download successful: {save_path}")
+            return True
+        return False
+    except Exception as e:
+        print(f"ffmpeg download error: {e}")
+        return False
+
+async def download_with_requests(url, save_path, progress_tracker):
+    try:
+        print(f"Attempting requests download: {url}")
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            
+            with open(save_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        progress_tracker.update(f.tell(), total_size)
+        
+        if os.path.exists(save_path):
+            print(f"requests download successful: {save_path}")
+            return True
+        return False
+    except Exception as e:
+        print(f"requests download error: {e}")
+        return False
+
+async def download_file(url, save_path, progress_msg):
+    """Try multiple download methods with fallback"""
+    progress_tracker = ProgressTracker(progress_msg, "download")
+    download_progress[progress_msg.chat.id] = {
+        "message": progress_msg,
+        "percentage": 0,
+        "speed": "0 B/s",
+        "eta": "--",
+        "current": 0,
+        "total": 1
+    }
+    
+    methods = [
+        ("yt-dlp", download_with_ytdlp),
+        ("ffmpeg", download_with_ffmpeg),
+        ("requests", download_with_requests)
+    ]
+    
+    for method_name, method in methods:
+        await progress_msg.edit_text(f"⬇️ Trying {method_name} download...")
+        if await method(url, save_path, progress_tracker):
+            return True
+    
+    return False
 
 def extract_url_and_key(full_url):
     if '*' not in full_url:
@@ -152,11 +235,11 @@ def decrypt_file(file_path, key):
         return False
 
 async def update_progress_message(chat_id, operation_type):
-    progress = download_progress if operation_type == "download" else upload_progress
-    if chat_id not in progress:
+    progress_dict = download_progress if operation_type == "download" else upload_progress
+    if chat_id not in progress_dict:
         return
     
-    data = progress[chat_id]
+    data = progress_dict[chat_id]
     progress_bar = "⬢" * int(data["percentage"] / 10) + "⬡" * (10 - int(data["percentage"] / 10))
     
     text = (
@@ -168,8 +251,7 @@ async def update_progress_message(chat_id, operation_type):
     )
     
     try:
-        message = download_progress[chat_id]["message"] if operation_type == "download" else upload_progress[chat_id]["message"]
-        await message.edit_text(text)
+        await data["message"].edit_text(text)
     except:
         pass
 
@@ -201,30 +283,16 @@ async def handle_url(client: Client, message: Message):
         )
         return
     
-    # Create progress message
     progress_msg = await message.reply_text("🔍 Starting process...")
     
     try:
         temp_dir = "temp_downloads"
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Setup download progress tracker
-        download_tracker = ProgressTracker(progress_msg, "download")
-        download_progress[message.chat.id] = {
-            "message": progress_msg,
-            "percentage": 0,
-            "speed": "0 B/s",
-            "eta": "--",
-            "current": 0,
-            "total": 1
-        }
-        
-        # Download with yt-dlp
-        await progress_msg.edit_text("⬇️ Preparing download...")
+        # Download the file (trying multiple methods)
         temp_file = os.path.join(temp_dir, "video_temp")
-        
-        if not download_with_ytdlp(video_url, temp_file, download_tracker):
-            await progress_msg.edit_text("❌ Download failed. Check the URL.")
+        if not await download_file(video_url, temp_file, progress_msg):
+            await progress_msg.edit_text("❌ All download methods failed.")
             return
         
         # Find the actual downloaded file
@@ -249,7 +317,7 @@ async def handle_url(client: Client, message: Message):
         final_path = os.path.join(temp_dir, f"decrypted{ext}")
         os.rename(downloaded_file, final_path)
         
-        # Setup upload progress tracker
+        # Setup upload progress
         upload_tracker = ProgressTracker(progress_msg, "upload")
         file_size = os.path.getsize(final_path)
         upload_progress[message.chat.id] = {
@@ -261,7 +329,7 @@ async def handle_url(client: Client, message: Message):
             "total": file_size
         }
         
-        # Send to user with progress tracking
+        # Upload with progress tracking
         await progress_msg.edit_text("📤 Preparing upload...")
         
         async def upload_progress(current, total):
