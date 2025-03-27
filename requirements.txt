@@ -36,3 +36,4 @@ m3u8
 python-telegram-bot==20.0
 collection
 datetime
+tenacity
