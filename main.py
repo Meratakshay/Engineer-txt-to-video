@@ -1,42 +1,48 @@
 import os
 import mmap
-import requests
+import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Bot configuration
-API_ID = 21705536  # Replace with your API ID from https://my.telegram.org
+API_ID = 1234567  # Replace with your API ID
 API_HASH = "c5bb241f6e3ecf33fe68a444e288de2d"  # Replace with your API HASH
-BOT_TOKEN = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"  # Replace with your bot token from @BotFather
+BOT_TOKEN = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"  # Replace with your bot token
 
 # Initialize the Pyrogram client
 app = Client("file_decryptor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-def download_file(url, save_path):
+def download_with_ytdlp(url, save_path):
     try:
-        print(f"Downloading file from: {url}")
-        response = requests.get(url, stream=True)
-        response.raise_for_status()  # Check for HTTP errors
-
-        with open(save_path, "wb") as file:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    file.write(chunk)
-        print(f"File downloaded successfully at: {save_path}")
+        print(f"Downloading with yt-dlp: {url}")
+        cmd = [
+            'yt-dlp',
+            '-o', save_path,
+            '--no-check-certificate',
+            '--quiet',
+            '--no-warnings',
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"yt-dlp error: {result.stderr}")
+            return False
+        
+        print(f"Download completed: {save_path}")
         return True
     except Exception as e:
-        print(f"Error during download: {e}")
+        print(f"Download error: {e}")
         return False
 
 def extract_url_and_key(full_url):
     if '*' not in full_url:
         return None, None
     
-    parts = full_url.split('*', 1)  # Split on first '*' only
+    parts = full_url.split('*', 1)
     video_url = parts[0]
     key = parts[1] if len(parts) > 1 else None
     
-    # Validate URL
     if not (video_url.startswith('http://') or video_url.startswith('https://')):
         return None, None
     
@@ -44,85 +50,85 @@ def extract_url_and_key(full_url):
 
 def decrypt_file(file_path, key):
     if not os.path.exists(file_path):
-        print("Encrypted file not found!")
+        print("File not found!")
         return False
     
     try:
-        print(f"Decrypting file: {file_path} with key: {key}")
+        print(f"Decrypting {file_path} with key: {key}")
         with open(file_path, "r+b") as f:
             num_bytes = min(28, os.path.getsize(file_path))
             with mmap.mmap(f.fileno(), length=num_bytes, access=mmap.ACCESS_WRITE) as mmapped_file:
                 for i in range(num_bytes):
-                    mmapped_file[i] ^= ord(key[i % len(key)])  # Use modulo to cycle through key
-        print("Decryption completed successfully!")
+                    mmapped_file[i] ^= ord(key[i % len(key)])
+        print("Decryption successful!")
         return True
     except Exception as e:
-        print(f"Error during decryption: {e}")
+        print(f"Decryption error: {e}")
         return False
 
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
     await message.reply_text(
-        "👋 Hello! I'm a file decryption bot.\n\n"
+        "👋 Hi! I'm a video downloader and decryption bot.\n\n"
         "Send me a URL in this format:\n"
-        "`https://example.com/encrypted.mkv*mysecretkey`\n\n"
-        "Where:\n"
-        "- Before * is the video URL\n"
-        "- After * is the decryption key"
+        "`https://example.com/video*decryptionkey`\n\n"
+        "I'll download the video and decrypt it for you!"
     )
 
 @app.on_message(filters.text & ~filters.command("start"))
 async def handle_url(client: Client, message: Message):
     user_input = message.text.strip()
-    
-    # Extract URL and key
     video_url, decryption_key = extract_url_and_key(user_input)
     
     if not video_url or not decryption_key:
         await message.reply_text(
             "❌ Invalid format. Please use:\n"
-            "`https://example.com/file.mkv*decryptionkey`"
+            "`https://example.com/video*decryptionkey`"
         )
         return
     
     processing_msg = await message.reply_text("🔍 Processing your request...")
     
     try:
-        # Create temp directory
-        temp_dir = "temp_files"
+        temp_dir = "temp_downloads"
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Generate file paths
-        encrypted_path = os.path.join(temp_dir, "encrypted.tmp")
-        decrypted_path = os.path.join(temp_dir, "decrypted.tmp")
-        
-        # Download only the video part (before *)
+        # Download with yt-dlp
         await processing_msg.edit_text("⬇️ Downloading video...")
-        if not download_file(video_url, encrypted_path):
-            await processing_msg.edit_text("❌ Failed to download the file.")
+        temp_file = os.path.join(temp_dir, "video_temp")
+        
+        if not download_with_ytdlp(video_url, temp_file):
+            await processing_msg.edit_text("❌ Download failed. Check the URL.")
             return
         
-        # Decrypt with the key part (after *)
+        # Find the actual downloaded file (yt-dlp might add extension)
+        downloaded_file = None
+        for f in os.listdir(temp_dir):
+            if f.startswith("video_temp"):
+                downloaded_file = os.path.join(temp_dir, f)
+                break
+        
+        if not downloaded_file:
+            await processing_msg.edit_text("❌ Couldn't find downloaded file.")
+            return
+        
+        # Decrypt the file
         await processing_msg.edit_text("🔓 Decrypting...")
-        if not decrypt_file(encrypted_path, decryption_key):
+        if not decrypt_file(downloaded_file, decryption_key):
             await processing_msg.edit_text("❌ Decryption failed. Check your key.")
             return
         
-        # Rename file with original extension if possible
-        original_filename = os.path.basename(video_url.split('?')[0].split('#')[0])
-        if '.' in original_filename:
-            ext = original_filename.split('.')[-1]
-            final_path = os.path.join(temp_dir, f"decrypted.{ext}")
-            os.rename(encrypted_path, final_path)
-        else:
-            final_path = encrypted_path
+        # Prepare final filename
+        ext = os.path.splitext(downloaded_file)[1] or '.mp4'
+        final_path = os.path.join(temp_dir, f"decrypted{ext}")
+        os.rename(downloaded_file, final_path)
         
         # Send to user
         await processing_msg.edit_text("📤 Uploading...")
         await message.reply_document(
             document=final_path,
-            caption="Here's your decrypted file!",
-            progress=lambda current, total: print(f"Uploaded {current} of {total} bytes")
+            caption="Here's your decrypted video!",
+            progress=lambda current, total: print(f"Uploaded {current}/{total} bytes")
         )
         
         await processing_msg.delete()
@@ -134,10 +140,9 @@ async def handle_url(client: Client, message: Message):
     
     finally:
         # Clean up
-        for f in [encrypted_path, decrypted_path, final_path]:
+        for f in os.listdir(temp_dir):
             try:
-                if f and os.path.exists(f):
-                    os.remove(f)
+                os.remove(os.path.join(temp_dir, f))
             except:
                 pass
 
