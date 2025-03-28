@@ -17,9 +17,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-API_ID = 21705536  # Replace with your API ID
-API_HASH = "c5bb241f6e3ecf33fe68a444e288de2d"  # Replace with your API HASH
-BOT_TOKEN = "7480080731:AAHJ3jgh7npoAJSZ0tiB2n0bqSY0sp5E4gk"  # Replace with your bot token
+API_ID = 27743952  # Replace with your API ID
+API_HASH = "416ba062bd16c6cf1aa38dd389726023"  # Replace with your API HASH
+BOT_TOKEN = ""  # Replace with your bot token
 
 # Constants
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB Telegram limit
